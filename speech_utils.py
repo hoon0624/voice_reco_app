@@ -190,10 +190,15 @@ class Recorder(object):
 			freq_dist = np.concatenate((pitches[-3], pitches[-2], pitches[-1]))
 			intensity_dist = np.concatenate((intensities[-3], intensities[-2], intensities[-1]))
 
-			print(freq_dist)
 			freq_mean = np.nanmean(freq_dist)
 			intensity_mean = np.mean(intensity_dist)
 			wordcount_mean = np.mean([x.num_words for x in rec_objs])
+			audio_length_mean = np.mean([x.audio_length for x in rec_objs])
+
+			print(freq_mean)
+			print(intensity_mean)
+			print(profile.mean_pitch)
+			print(profile.mean_inten)
 
 			filler_totals = Counter()
 			for recording in rec_objs:
@@ -201,8 +206,9 @@ class Recorder(object):
 					filler_totals += recording.fillers['Filler Counts']
 
 			wc_modifier = math.log(abs(profile.rate_of_speech-wordcount_mean), 200)
-			filler_score = math.log(sum(list(filler_totals.values())) / _TIME_INTERVAL)
+			filler_score = math.log(sum(list(filler_totals.values())) / audio_length_mean)
 
+			rlyhigh_freq = False
 			high_freq = False
 			low_freq = False
 			high_inten = False
@@ -211,6 +217,8 @@ class Recorder(object):
 			emotion = ""
 			#if the average frequency is more than a standard deviation away from the mean:
 			if freq_mean > profile.mean_pitch + 1.5*profile.std_pitch:
+				rlyhigh_freq = True
+			elif freq_mean > profile.mean_pitch + 1*profile.std_pitch:
 				high_freq = True
 			elif freq_mean < profile.mean_pitch - 1.5*profile.std_pitch:
 				low_freq = True
@@ -222,12 +230,12 @@ class Recorder(object):
 				low_inten = True
 
 			if high_freq:
-				if high_inten:
+				if rlyhigh_freq and high_inten:
 					predictions.append(Prediction(_MESSAGES['Anger'], 0.4 + wc_modifier))
-				elif low_inten:
+				else:
 					predictions.append(Prediction(_MESSAGES['Fear'], 0.4 + wc_modifier))
 
-			predictions.append(Prediction(_MESSAGES['Speed'].format(wordcount_mean/_TIME_INTERVAL, profile.rate_of_speech), wc_modifier))
+			predictions.append(Prediction(_MESSAGES['Speed'].format(wordcount_mean/audio_length_mean, profile.rate_of_speech), wc_modifier))
 			if filler_totals:
 				predictions.append(Prediction(_MESSAGES['Fillers'].format(filler_totals.most_common(1)[0]), filler_score))
 
@@ -238,14 +246,16 @@ class Recorder(object):
 		return best_predict.to_json()
 
 
-'''
-prof = rec.gen_profile('../test/peter_profile.wav')
-prof.to_json('./profiles/Peter.json')'''
+
+
 rec = Recorder()
-prof = Profile.from_json('./profiles/Peter.json')
-rec.add_recording('../test/f10.wav')
-rec.add_recording('../test/f11.wav')
-rec.add_recording('../test/f12.wav')
+prof = rec.gen_profile('../test/peter_profile.wav')
+prof.to_json('./profiles/Peter.json')
+prof = Profile.from_json('./profiles/Neshma.json')
+
+rec.add_recording('../test/na1.wav')
+rec.add_recording('../test/na2.wav')
+rec.add_recording('../test/na3.wav')
 
 
 print(rec.analyse(prof))
