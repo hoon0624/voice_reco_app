@@ -3,34 +3,51 @@ AUTHOR: Peter Ball
 email: peter.ball@mail.mcgill.ca
 '''
 import speech_recognition as sr
-import csvS
 import pickle
+import json
 
 from nltk.tokenize import word_tokenize
 import parselmouth
+from collections import Counter
+
+import numpy as np
+import math
 
 _COUNTER_PATH = './counter.pickle'
 _META_PATH = './meta.json'
 _TRANSCRIPT_PATH = './transcript.txt'
+_TIME_INTERVAL = 5
+
+_FILLER_WORDS = ['like', 'really', 'right', 'totally']
+
+_MESSAGES = {
+	'Anger': "You seem upset. Take some deep breaths and regroup.",
+	'Fear': "You are coming across as nervous. Speak slowly and measuredly.",
+	'Fillers': "You are using {} a lot. Make every word count!",
+	'Speed': "You are speaking at {} words/second, when you normally speak at {} words/second.",
+	'No Comment': "You're sounding great!"
+}
 
 class Recording(object):
 	def __init__(self, recognizer, filepath):
-		self.processed = process_voice(recognizer, filepath)
-		self.transcription = processed['transcription']
-		self.tokens = word_tokenize(transcription)
+		self.processed = self.process_voice(recognizer, filepath)
+		self.transcription = self.processed['transcription']
+		self.tokens = word_tokenize(self.transcription)
 
-		self.fillers = find_fillers()
-		self.num_words = len(tokens)
+		self.fillers = self.find_fillers()
+		self.num_words = len(self.tokens)
 
 		self.pm_sound = parselmouth.Sound(filepath)
-		self.avg_intensity = get_avg_intensity()
-		self.avg_pitch = get_avg_pitch()
+		self.intensity = self.get_intensity()
+		self.pitch = self.get_pitch()
+		self.audio_length = self.pm_sound.get_total_duration()
 
 	def process_voice(self, recognizer, filepath):
 		#THis method takes ideas from https://realpython.com/python-speech-recognition/
-		recognizer.adjust_for_ambient_noise(source)
-		source = sr.AudioFile(filepath)
-		audio = recognizer.record(source)
+		voice = sr.AudioFile(filepath)
+		with voice as source:
+			recognizer.adjust_for_ambient_noise(source)
+			audio = recognizer.record(source)
 
 		response = {
 			"success": True,
@@ -52,11 +69,11 @@ class Recording(object):
 		return response
 
 	def find_fillers(self):
-		fillers = [x for x in self.tokens if x in filler_words]
+		fillers = [x for x in self.tokens if x in _FILLER_WORDS]
 		
 		filler_counts = Counter(fillers)
 		response = {
-			'Status': False
+			'Status': False,
 			'Filler Counts': None
 		}
 
@@ -66,30 +83,167 @@ class Recording(object):
 
 		return response
 
-	def get_avg_intensity(self):
-		intensity = self.pm_sound.to_intensity()
+	def get_intensity(self):
+		return self.pm_sound.to_intensity().values.T
 
-		return intensity.get_average()
-
-	def get_avg_pitch(self):
-		pitch = self.pm_sound.to_pitch()
-		pitch_array = pitch.selected_array['frequency']
-
-		return np.mean(pitch_array)
+	def get_pitch(self):
+		pitch_obj = self.pm_sound.to_pitch()
+		pitch_values = pitch_obj.selected_array['frequency']
+		pitch_values[pitch_values==0] = np.nan
+		return pitch_values
 
 	def output(self):
 		result = {
-			'transcription' = self.transcription
-			fillers = self.fillers
+			'transcription': self.transcription,
+			'fillers': self.fillers
 		}
+
+
+class Profile(object):
+	def __init__(self, mean_pitch, std_pitch, mean_inten, std_inten, rate_of_speech):
+		self.mean_pitch = mean_pitch
+		self.std_pitch = std_pitch
+		self.mean_inten = mean_inten
+		self.std_inten = std_inten
+		self.rate_of_speech = rate_of_speech
+
+	def to_json(self, filepath):
+		#WARNING: overwrites file at filepath!
+		output = {
+			'mean_pitch': self.mean_pitch,
+			'std_pitch': self.std_pitch,
+			'mean_inten': self.mean_inten,
+			'std_inten': self.std_inten,
+			'rate_of_speech': self.rate_of_speech
+
+		}
+
+		with open(filepath, 'w') as fp:
+			json.dump(output, fp)
+
+	def from_json(filepath):
+
+		with open(filepath) as fp:
+			result = json.load(fp)
+
+		return(Profile(result['mean_pitch'],
+					   result['std_pitch'],
+					   result['mean_inten'], 
+					   result['std_inten'],
+					   result['rate_of_speech']))
+
+class Prediction(object):
+	def __init__(self, message, score):
+		self.message = message
+		self.score = score
+
+	def to_json(self):
+		output = {
+			'message': self.message,
+			'score': self.score
+		}
+
+		return json.dumps(output)
 
 class Recorder(object):
 	def __init__(self):
 		self.recordings = []
 		self.recognizer = sr.Recognizer()
 
-		analyse()
+	def gen_profile(self, filepath):
+		rec = Recording(self.recognizer, filepath)
 
-		def add_recording(self, filepath):
-			new_recording = Recording(self.recognizer, filepath)
-			self.recordings.append(new_recording)
+		mean_pitch = np.nanmean(rec.pitch)
+		std_pitch = np.nanstd(rec.pitch)
+
+		mean_inten = np.mean(rec.intensity)
+		std_inten = np.std(rec.intensity)
+
+		rate_of_speech = rec.num_words/rec.audio_length
+		return Profile(mean_pitch, std_pitch, mean_inten, std_inten, rate_of_speech)
+
+
+
+	def add_recording(self, filepath):
+		new_recording = Recording(self.recognizer, filepath)
+		self.recordings.append(new_recording)
+
+	def analyse(self, profile):
+		pitches = []
+		intensities = []
+		for recording in self.recordings:
+
+			pitches.append(recording.pitch)
+			intensities.append(recording.intensity)
+
+		predictions = []
+		best_predict = Prediction(_MESSAGES['No Comment'], 0)
+
+		#Only make recomendations once they've been talking for a bit
+		#Only make recomendations based on recent time window
+		if len(self.recordings) > 2:
+			rec_objs = self.recordings[-3:]
+			freq_dist = np.concatenate((pitches[-3], pitches[-2], pitches[-1]))
+			intensity_dist = np.concatenate((intensities[-3], intensities[-2], intensities[-1]))
+
+			print(freq_dist)
+			freq_mean = np.nanmean(freq_dist)
+			intensity_mean = np.mean(intensity_dist)
+			wordcount_mean = np.mean([x.num_words for x in rec_objs])
+
+			filler_totals = Counter()
+			for recording in rec_objs:
+				if recording.fillers['Status']:
+					filler_totals += recording.fillers['Filler Counts']
+
+			wc_modifier = math.log(abs(profile.rate_of_speech-wordcount_mean), 200)
+			filler_score = 2 * sum(list(filler_totals.values())) / sum([x.num_words for x in rec_objs])
+
+			high_freq = False
+			low_freq = False
+			high_inten = False
+			low_inten = False
+
+			emotion = ""
+			#if the average frequency is more than a standard deviation away from the mean:
+			if freq_mean > profile.mean_pitch + profile.std_pitch:
+				high_freq = True
+			elif freq_mean < profile.mean_pitch - profile.std_pitch:
+				low_freq = True
+
+			# If the average intensity is more than a standard deviation away from the mean:
+			if intensity_mean > profile.mean_inten + profile.std_inten:
+				high_inten = True
+			if intensity_mean < profile.mean_inten - profile.std_inten:
+				low_inten = True
+
+
+			if high_freq:
+				if high_inten:
+					predictions.append(Prediction(_MESSAGES['Anger'], 0.4 + wc_modifier))
+				elif low_inten:
+					predictions.append(Prediction(_MESSAGES['Fear'], 0.4 + wc_modifier))
+
+			predictions.append(Prediction(_MESSAGES['Speed'].format(wordcount_mean/_TIME_INTERVAL, profile.rate_of_speech), wc_modifier))
+			if filler_totals:
+				predictions.append(Prediction(_MESSAGES['Fillers'].format(filler_totals.most_common(1)[0]), filler_score))
+
+			for prediction in predictions:
+				if prediction.score > best_predict.score:
+					best_predict = prediction
+
+		 
+		return best_predict.to_json()
+
+
+'''
+prof = rec.gen_profile('../test/peter_profile.wav')
+prof.to_json('./profiles/Peter.json')'''
+rec = Recorder()
+prof = Profile.from_json('./profiles/Peter.json')
+rec.add_recording('../test/1.wav')
+rec.add_recording('../test/3.wav')
+rec.add_recording('../test/6.wav')
+
+
+print(rec.analyse(prof))
