@@ -21,7 +21,7 @@ _TIME_INTERVAL = 5
 _FILLER_WORDS = ['like', 'really', 'right', 'totally']
 
 _MESSAGES = {
-	'Anger': "You seem upset. Take some deep breaths and regroup.",
+	'Anger': "You seem angry. Take some deep breaths and regroup.",
 	'Fear': "You are coming across as nervous. Speak slowly and measuredly.",
 	'Fillers': "You are using {} a lot. Make every word count!",
 	'Speed': "You are speaking at {} words/second, when you normally speak at {} words/second.",
@@ -145,6 +145,9 @@ class Prediction(object):
 
 		return json.dumps(output)
 
+	def __str__(self):
+		return("Message: {0}, Score: {1}".format(self.message, self.score))
+
 class Recorder(object):
 	def __init__(self):
 		self.recordings = []
@@ -181,6 +184,7 @@ class Recorder(object):
 
 		#Only make recomendations once they've been talking for a bit
 		#Only make recomendations based on recent time window
+		#Recommendation weighting is pretty hacky!
 		if len(self.recordings) > 2:
 			rec_objs = self.recordings[-3:]
 			freq_dist = np.concatenate((pitches[-3], pitches[-2], pitches[-1]))
@@ -197,7 +201,7 @@ class Recorder(object):
 					filler_totals += recording.fillers['Filler Counts']
 
 			wc_modifier = math.log(abs(profile.rate_of_speech-wordcount_mean), 200)
-			filler_score = 2 * sum(list(filler_totals.values())) / sum([x.num_words for x in rec_objs])
+			filler_score = math.log(sum(list(filler_totals.values())) / _TIME_INTERVAL)
 
 			high_freq = False
 			low_freq = False
@@ -206,9 +210,9 @@ class Recorder(object):
 
 			emotion = ""
 			#if the average frequency is more than a standard deviation away from the mean:
-			if freq_mean > profile.mean_pitch + profile.std_pitch:
+			if freq_mean > profile.mean_pitch + 1.5*profile.std_pitch:
 				high_freq = True
-			elif freq_mean < profile.mean_pitch - profile.std_pitch:
+			elif freq_mean < profile.mean_pitch - 1.5*profile.std_pitch:
 				low_freq = True
 
 			# If the average intensity is more than a standard deviation away from the mean:
@@ -216,7 +220,6 @@ class Recorder(object):
 				high_inten = True
 			if intensity_mean < profile.mean_inten - profile.std_inten:
 				low_inten = True
-
 
 			if high_freq:
 				if high_inten:
@@ -231,8 +234,7 @@ class Recorder(object):
 			for prediction in predictions:
 				if prediction.score > best_predict.score:
 					best_predict = prediction
-
-		 
+		print([str(x) for x in predictions])
 		return best_predict.to_json()
 
 
@@ -241,9 +243,9 @@ prof = rec.gen_profile('../test/peter_profile.wav')
 prof.to_json('./profiles/Peter.json')'''
 rec = Recorder()
 prof = Profile.from_json('./profiles/Peter.json')
-rec.add_recording('../test/1.wav')
-rec.add_recording('../test/3.wav')
-rec.add_recording('../test/6.wav')
+rec.add_recording('../test/f10.wav')
+rec.add_recording('../test/f11.wav')
+rec.add_recording('../test/f12.wav')
 
 
 print(rec.analyse(prof))
